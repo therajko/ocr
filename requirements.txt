@@ -9,4 +9,3 @@ markdown
 docx
 regex
 base64io
-exceptions
