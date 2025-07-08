@@ -109,37 +109,32 @@ def create_excel_from_transcripts(output_dir, excel_filename="combined_analysis.
     print(f"Processing {len(transcript_files)} files...")
     
     for file in transcript_files:
-        try:
-            with open(os.path.join(output_dir, file), 'r', encoding='utf-8') as f:
-                raw_content = f.read()
-            
-            # Pre-process: Extract markdown content
-            content = extract_markdown_content(raw_content)
-            
-            # Extract product name
-            product_name = extract_product_name(content)
-            print(f"File: {file} -> Product: {product_name or 'No product found'}")
-            
-            # Convert content to rows
-            rows = process_content_to_rows(content)
-            
-            # Store document data
-            document_data = {
-                'source_file': file,
-                'rows': rows,
-                'processed_content': content,
-                'raw_content': raw_content
-            }
-            
-            # Use filename as fallback if no product name found
-            if not product_name:
-                product_name = file.replace('.txt', '').replace('_', ' ')
-            
-            products_data[product_name].append(document_data)
-            
-        except Exception as e:
-            print(f"Error processing {file}: {e}")
-            continue
+        with open(os.path.join(output_dir, file), 'r', encoding='utf-8') as f:
+            raw_content = f.read()
+        
+        # Pre-process: Extract markdown content
+        content = extract_markdown_content(raw_content)
+        
+        # Extract product name
+        product_name = extract_product_name(content)
+        print(f"File: {file} -> Product: {product_name or 'No product found'}")
+        
+        # Convert content to rows
+        rows = process_content_to_rows(content)
+        
+        # Store document data
+        document_data = {
+            'source_file': file,
+            'rows': rows,
+            'processed_content': content,
+            'raw_content': raw_content
+        }
+        
+        # Use filename as fallback if no product name found
+        if not product_name:
+            product_name = file.replace('.txt', '').replace('_', ' ')
+        
+        products_data[product_name].append(document_data)
     
     # Create Excel file
     excel_path = os.path.join(output_dir, excel_filename)
@@ -201,11 +196,11 @@ def create_excel_from_transcripts(output_dir, excel_filename="combined_analysis.
     
     return excel_path
 
-def main(pdf_file_path=None):
+def main(pdf_file_path):
     """
     Main function - simplified pipeline.
     Args:
-        pdf_file_path (str, optional): Specific PDF file to process. If None, processes all PDFs in current directory.
+        pdf_file_path (str): Specific PDF file to process.
     """
     images_local_path = "./images"
     output_dir = "./transcriptions"
@@ -220,7 +215,6 @@ def main(pdf_file_path=None):
     if not transcript_files:
         print("Step 1: Converting PDF to images...")
         
-    
         # Process specific PDF file
         print(f"Processing specific PDF: {pdf_file_path}")
         
@@ -236,7 +230,6 @@ def main(pdf_file_path=None):
         
         # Process only the isolated directory
         convert_to_images.main(pdf_dir)
-    
         
         print("Step 2: Processing images...")
         process_images_with_model(images_local_path, output_dir, model_name)
@@ -253,4 +246,8 @@ def main(pdf_file_path=None):
         print("\nFailed to create Excel file.")
 
 if __name__ == "__main__":
-    main()
+    import sys
+    if len(sys.argv) != 2:
+        print("Usage: python process_transcripts.py <pdf_file_path>")
+        sys.exit(1)
+    main(sys.argv[1])

@@ -97,36 +97,31 @@ def create_excel_from_transcripts(output_dir, excel_filename="combined_analysis.
         return None
     
     for file in transcript_files:
-        try:
-            with open(os.path.join(output_dir, file), 'r', encoding='utf-8') as f:
-                raw_content = f.read()
-            
-            # Pre-process: Extract markdown content
-            content = extract_markdown_content(raw_content)
-            
-            # Extract product name
-            product_name = extract_product_name(content)
-            
-            # Convert content to rows
-            rows = process_content_to_rows(content)
-            
-            # Store document data
-            document_data = {
-                'source_file': file,
-                'rows': rows,
-                'processed_content': content,
-                'raw_content': raw_content
-            }
-            
-            # Use filename as fallback if no product name found
-            if not product_name:
-                product_name = file.replace('.txt', '').replace('_', ' ')
-            
-            products_data[product_name].append(document_data)
-            
-        except Exception as e:
-            st.error(f"Error processing {file}: {e}")
-            continue
+        with open(os.path.join(output_dir, file), 'r', encoding='utf-8') as f:
+            raw_content = f.read()
+        
+        # Pre-process: Extract markdown content
+        content = extract_markdown_content(raw_content)
+        
+        # Extract product name
+        product_name = extract_product_name(content)
+        
+        # Convert content to rows
+        rows = process_content_to_rows(content)
+        
+        # Store document data
+        document_data = {
+            'source_file': file,
+            'rows': rows,
+            'processed_content': content,
+            'raw_content': raw_content
+        }
+        
+        # Use filename as fallback if no product name found
+        if not product_name:
+            product_name = file.replace('.txt', '').replace('_', ' ')
+        
+        products_data[product_name].append(document_data)
     
     # Create Excel file
     excel_path = os.path.join(output_dir, excel_filename)
@@ -203,73 +198,68 @@ def process_pdf_pipeline(pdf_path, temp_dir, model_name="openai"):
     progress_bar = st.progress(0)
     status_text = st.empty()
     
+    # Step 1: Convert PDF to images
+    status_text.text("Step 1/3: Converting PDF to images...")
+    progress_bar.progress(10)
+    
+    # Change to temp directory and process only the isolated PDF directory
+    original_cwd = os.getcwd()
+    os.chdir(temp_dir)
+    
     try:
-        # Step 1: Convert PDF to images
-        status_text.text("Step 1/3: Converting PDF to images...")
-        progress_bar.progress(10)
+        # Pass the pdf_input directory to ensure only uploaded PDF is processed
+        convert_to_images.main("./pdf_input")
+    finally:
+        os.chdir(original_cwd)
+    
+    progress_bar.progress(30)
+    
+    # Check if images were created
+    image_files = [f for f in os.listdir(images_dir) if f.lower().endswith(('.jpg', '.jpeg', '.png'))]
+    if not image_files:
+        st.error("No images were generated from the PDF")
+        return None
+    
+    st.success(f"✅ Generated {len(image_files)} images from PDF")
+    
+    # Step 2: Process images with model
+    status_text.text("Step 2/3: Processing images with AI model...")
+    progress_bar.progress(50)
+    
+    process_images_with_model(images_dir, transcriptions_dir, model_name)
+    progress_bar.progress(80)
+    
+    # Check if transcriptions were created
+    transcript_files = [f for f in os.listdir(transcriptions_dir) if f.endswith('.txt')]
+    if not transcript_files:
+        st.error("No transcriptions were generated")
+        return None
+    
+    st.success(f"✅ Generated {len(transcript_files)} transcriptions")
+    
+    # Step 3: Create Excel file
+    status_text.text("Step 3/3: Creating Excel file...")
+    progress_bar.progress(90)
+    
+    result = create_excel_from_transcripts(transcriptions_dir)
+    
+    if result:
+        excel_path, products_data = result
+        progress_bar.progress(100)
+        status_text.text("✅ Processing complete!")
         
-        # Change to temp directory and process only the isolated PDF directory
-        original_cwd = os.getcwd()
-        os.chdir(temp_dir)
+        # Display results summary
+        st.success(f"🎉 Successfully processed PDF!")
+        st.info(f"📊 Found {len(products_data)} unique products across {len(transcript_files)} pages")
         
-        try:
-            # Pass the pdf_input directory to ensure only uploaded PDF is processed
-            convert_to_images.main("./pdf_input")
-        finally:
-            os.chdir(original_cwd)
+        # Show product summary
+        with st.expander("📋 Product Summary"):
+            for product_name, documents in products_data.items():
+                st.write(f"**{product_name}**: {len(documents)} pages")
         
-        progress_bar.progress(30)
-        
-        # Check if images were created
-        image_files = [f for f in os.listdir(images_dir) if f.lower().endswith(('.jpg', '.jpeg', '.png'))]
-        if not image_files:
-            st.error("No images were generated from the PDF")
-            return None
-        
-        st.success(f"✅ Generated {len(image_files)} images from PDF")
-        
-        # Step 2: Process images with model
-        status_text.text("Step 2/3: Processing images with AI model...")
-        progress_bar.progress(50)
-        
-        process_images_with_model(images_dir, transcriptions_dir, model_name)
-        progress_bar.progress(80)
-        
-        # Check if transcriptions were created
-        transcript_files = [f for f in os.listdir(transcriptions_dir) if f.endswith('.txt')]
-        if not transcript_files:
-            st.error("No transcriptions were generated")
-            return None
-        
-        st.success(f"✅ Generated {len(transcript_files)} transcriptions")
-        
-        # Step 3: Create Excel file
-        status_text.text("Step 3/3: Creating Excel file...")
-        progress_bar.progress(90)
-        
-        result = create_excel_from_transcripts(transcriptions_dir)
-        
-        if result:
-            excel_path, products_data = result
-            progress_bar.progress(100)
-            status_text.text("✅ Processing complete!")
-            
-            # Display results summary
-            st.success(f"🎉 Successfully processed PDF!")
-            st.info(f"📊 Found {len(products_data)} unique products across {len(transcript_files)} pages")
-            
-            # Show product summary
-            with st.expander("📋 Product Summary"):
-                for product_name, documents in products_data.items():
-                    st.write(f"**{product_name}**: {len(documents)} pages")
-            
-            return excel_path
-        else:
-            st.error("Failed to create Excel file")
-            return None
-            
-    except Exception as e:
-        st.error(f"Error during processing: {str(e)}")
+        return excel_path
+    else:
+        st.error("Failed to create Excel file")
         return None
 
 def main():
