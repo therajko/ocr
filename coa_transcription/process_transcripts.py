@@ -201,9 +201,11 @@ def create_excel_from_transcripts(output_dir, excel_filename="combined_analysis.
     
     return excel_path
 
-def main():
+def main(pdf_file_path=None):
     """
     Main function - simplified pipeline.
+    Args:
+        pdf_file_path (str, optional): Specific PDF file to process. If None, processes all PDFs in current directory.
     """
     images_local_path = "./images"
     output_dir = "./transcriptions"
@@ -217,7 +219,24 @@ def main():
     
     if not transcript_files:
         print("Step 1: Converting PDF to images...")
-        convert_to_images.main("./")
+        
+    
+        # Process specific PDF file
+        print(f"Processing specific PDF: {pdf_file_path}")
+        
+        # Create isolated directory for the specific PDF
+        pdf_dir = "./pdf_input"
+        os.makedirs(pdf_dir, exist_ok=True)
+        
+        # Copy the specific PDF to isolated directory
+        import shutil
+        pdf_basename = os.path.basename(pdf_file_path)
+        target_pdf = os.path.join(pdf_dir, pdf_basename)
+        shutil.copy2(pdf_file_path, target_pdf)
+        
+        # Process only the isolated directory
+        convert_to_images.main(pdf_dir)
+    
         
         print("Step 2: Processing images...")
         process_images_with_model(images_local_path, output_dir, model_name)

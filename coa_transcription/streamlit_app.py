@@ -188,14 +188,16 @@ def create_excel_from_transcripts(output_dir, excel_filename="combined_analysis.
 def process_pdf_pipeline(pdf_path, temp_dir, model_name="openai"):
     """Complete pipeline to process PDF and generate Excel."""
     
-    # Create subdirectories
+    # Create isolated subdirectory for the uploaded PDF only
+    pdf_dir = os.path.join(temp_dir, "pdf_input")
     images_dir = os.path.join(temp_dir, "images")
     transcriptions_dir = os.path.join(temp_dir, "transcriptions")
+    os.makedirs(pdf_dir, exist_ok=True)
     os.makedirs(images_dir, exist_ok=True)
     os.makedirs(transcriptions_dir, exist_ok=True)
     
-    # Copy PDF to temp directory
-    temp_pdf_path = os.path.join(temp_dir, "uploaded_document.pdf")
+    # Copy PDF to isolated directory
+    temp_pdf_path = os.path.join(pdf_dir, "uploaded_document.pdf")
     shutil.copy2(pdf_path, temp_pdf_path)
     
     progress_bar = st.progress(0)
@@ -206,12 +208,13 @@ def process_pdf_pipeline(pdf_path, temp_dir, model_name="openai"):
         status_text.text("Step 1/3: Converting PDF to images...")
         progress_bar.progress(10)
         
-        # Change to temp directory to run convert_to_images
+        # Change to temp directory and process only the isolated PDF directory
         original_cwd = os.getcwd()
         os.chdir(temp_dir)
         
         try:
-            convert_to_images.main("./")
+            # Pass the pdf_input directory to ensure only uploaded PDF is processed
+            convert_to_images.main("./pdf_input")
         finally:
             os.chdir(original_cwd)
         
