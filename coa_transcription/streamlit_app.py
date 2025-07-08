@@ -14,6 +14,20 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import convert_to_images
 from extract_and_process_images import process_images_with_model
 
+def check_dependencies():
+    """Check if required system dependencies are available."""
+    try:
+        import pdf2image
+        # Try to check if poppler is available
+        from pdf2image.exceptions import PDFInfoNotInstalledError, PDFPageCountError
+        return True
+    except ImportError as e:
+        st.error(f"Missing Python dependency: {e}")
+        return False
+    except Exception as e:
+        st.warning(f"Dependency check warning: {e}")
+        return True  # Continue anyway
+
 def extract_markdown_content(content):
     """Extract content between ```markdown ``` blocks."""
     markdown_pattern = r'```markdown\s*\n(.*?)\n```'
@@ -204,15 +218,43 @@ def process_pdf_pipeline(pdf_path, temp_dir, model_name="openai"):
     
     # Change to temp directory and process only the isolated PDF directory
     original_cwd = os.getcwd()
-    os.chdir(temp_dir)
     
-
-    convert_to_images.main(pdf_dir)
+    try:
+        os.chdir(temp_dir)
+        
+        # Convert PDF to images
+        try:
+            success = convert_to_images.main("./pdf_input")  # Use relative path
+            
+            if not success:
+                st.error("Failed to convert PDF to images")
+                return None
+                
+        except Exception as e:
+            st.error(f"Error during PDF conversion: {str(e)}")
+            st.error("This might be due to missing system dependencies. Make sure poppler-utils is installed.")
+            return None
+            
+    finally:
+        # Always restore the original working directory
+        os.chdir(original_cwd)
     
     progress_bar.progress(30)
-    st.info("images_dir: " + str(os.listdir(pdf_dir)))
+    
+    # Debug information
+    st.info(f"Temp directory structure:")
+    for root, dirs, files in os.walk(temp_dir):
+        level = root.replace(temp_dir, '').count(os.sep)
+        indent = ' ' * 2 * level
+        st.text(f"{indent}{os.path.basename(root)}/")
+        subindent = ' ' * 2 * (level + 1)
+        for file in files:
+            st.text(f"{subindent}{file}")
+    
     # Check if images were created
-    image_files = [f for f in os.listdir(images_dir) if f.lower().endswith(('.jpg', '.jpeg', '.png'))]
+    image_files = [f for f in os.listdir(images_dir) if f.lower().endswith(('.jpg', '.jpeg', '.png'))] if os.path.exists(images_dir) else []
+    st.info(f"Images directory exists: {os.path.exists(images_dir)}")
+    st.info(f"Found {len(image_files)} image files")
     if not image_files:
         st.error("No images were generated from the PDF")
         return None
@@ -272,6 +314,11 @@ def main():
     # Check for OpenAI API key
     if not os.environ.get("OPENAI_API_KEY"):
         st.error("⚠️ OpenAI API key not found. Please set the OPENAI_API_KEY environment variable.")
+        st.stop()
+    
+    # Check dependencies
+    if not check_dependencies():
+        st.error("⚠️ Required dependencies are not available. Please check the installation.")
         st.stop()
     
     # File uploader
