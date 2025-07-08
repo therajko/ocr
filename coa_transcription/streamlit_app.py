@@ -207,7 +207,7 @@ def process_pdf_pipeline(pdf_path, temp_dir, model_name="openai"):
     os.chdir(temp_dir)
     
 
-    convert_to_images.main("./pdf_input")
+    convert_to_images.main(pdf_dir)
     
     progress_bar.progress(30)
     st.info("images_dir: " + str(os.listdir(pdf_dir)))
