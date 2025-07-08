@@ -1,25 +1,11 @@
 pdf2image==1.16.3
-Pillow
 openai
 requests
-imagekitio
-torch
-transformers
 pandas
 openpyxl
-markdown-it-py
-langchain
-chromadb
-sentence-transformers
-torch
-llama-cpp-python
-langchain-community
+# chromadb
 streamlit
 markdown
 docx
-python-docx
-zipfile36
-typing-extensions
-python-dateutil
 regex
 base64io
