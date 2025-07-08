@@ -182,35 +182,65 @@ Focus on extracting complete analytical results to populate the certificate data
         if self.client is None:
             self.client = openai.OpenAI()
             
-        prompt = self.create_extraction_prompt(template_name, template_data, transcript_content)
+        # Create a much simpler, more direct prompt
+        headers = template_data['headers']
         
+        simple_prompt = f"""
+Extract data from this Certificate of Analysis content and format as JSON.
+
+COA CONTENT:
+{transcript_content}
+
+REQUIRED FIELDS (extract exactly what you see in the content):
+{chr(10).join([f'- {header}' for header in headers])}
+
+INSTRUCTIONS:
+1. Look for actual test results and values in the content
+2. Extract product information like name, batch number, etc.
+3. For test results, extract the actual measured values (not specifications)
+4. If you can't find a value, use "N/A"
+5. Return valid JSON with the exact field names provided
+
+OUTPUT: Return ONLY a JSON object with the required fields.
+"""
+
         try:
             response = self.client.chat.completions.create(
-                model="gpt-4",
+                model="gpt-4o",
                 messages=[
-                    {"role": "system", "content": "You are a pharmaceutical data extraction specialist. Extract data accurately and format it as requested."},
-                    {"role": "user", "content": prompt}
+                    {"role": "system", "content": "You are a data extraction expert. Extract information from pharmaceutical certificates and return valid JSON."},
+                    {"role": "user", "content": simple_prompt}
                 ],
-                temperature=0.1,
-                max_tokens=2000
+                temperature=0.1
             )
             
             extracted_text = response.choices[0].message.content
+            if extracted_text:
+                extracted_text = extracted_text.strip()
+                print(f"Raw AI response: {extracted_text[:200]}...")
+            else:
+                print("AI returned empty content")
             
             # Extract JSON from response
             if extracted_text:
+                # Try to find JSON in the response
                 json_match = re.search(r'\{.*\}', extracted_text, re.DOTALL)
+                if json_match:
+                    extracted_data = json.loads(json_match.group())
+                    print(f"Successfully extracted {len(extracted_data)} fields")
+                    return extracted_data
+                else:
+                    print("No JSON found in AI response")
+                    print(f"Full response: {extracted_text}")
+                    return None
             else:
-                json_match = None
-            if json_match:
-                extracted_data = json.loads(json_match.group())
-                return extracted_data
-            else:
-                print("No JSON found in AI response")
+                print("Empty response from AI")
                 return None
                 
         except Exception as e:
             print(f"Error in AI extraction: {e}")
+            import traceback
+            traceback.print_exc()
             return None
     
     def identify_product_from_transcript(self, content):
@@ -219,22 +249,20 @@ Focus on extracting complete analytical results to populate the certificate data
         """
         content_lower = content.lower()
         
-        # Product name extraction patterns
+        # Updated patterns to match actual transcript content
         product_patterns = [
-            r'product\s*name[:\s]*([^\n\|]+)',
-            r'produktname[:\s]*([^\n\|]+)',  
-            r'produkt[:\s]*([^\n\|]+)',
-            r'product[:\s]*([^\n\|]+)',  # Added pattern for "Product:"
-            r'preparation[:\s]*([^\n\|]+)',
-            r'drug[:\s]*([^\n\|]+)',
+            r'\*\*Product Name:\*\*\s*([^\n\|]+)',                    # **Product Name:** value
+            r'Product Name:\s*\|\s*([^\|]+)\s*\|',                    # | Product Name: | value |
+            r'\|\s*\*\*Product Name:\*\*\s*\|\s*([^\|]+)\s*\|',       # | **Product Name:** | value |
+            r'Product Name:\s*([^\n\|]+)',                            # Product Name: value
         ]
         
-        # Batch number patterns  
         batch_patterns = [
-            r'batch\s*(?:no|number)[:\s]*([^\n\|]+)',
-            r'batch[:\s]*([^\n\|]+)',  # Added pattern for "Batch:"
-            r'lot\s*(?:no|number)[:\s]*([^\n\|]+)',
-            r'charge[:\s]*([^\n\|]+)',
+            r'\*\*Manufacturer Batch No\.?:\*\*\s*([^\n\|]+)',        # **Manufacturer Batch No:** value
+            r'Manufacturer Batch No\.?:\s*\|\s*([^\|]+)\s*\|',        # | Manufacturer Batch No: | value |
+            r'\|\s*\*\*Manufacturer Batch No\.?:\*\*\s*\|\s*([^\|]+)\s*\|',  # | **Manufacturer Batch No:** | value |
+            r'Manufacturer Batch No\.?:\s*([^\n\|]+)',                # Manufacturer Batch No: value
+            r'Manufacture Batch No\.?:\s*\|\s*([^\|]+)\s*\|',         # | Manufacture Batch No: | value | (typo in source)
         ]
         
         product_info = {}
@@ -244,32 +272,40 @@ Focus on extracting complete analytical results to populate the certificate data
             match = re.search(pattern, content, re.IGNORECASE)
             if match:
                 product_name = match.group(1).strip()
-                # Clean up
-                product_name = re.sub(r'[|*#]', ' ', product_name).strip()
+                # Clean up the product name
+                product_name = re.sub(r'[*|]', '', product_name).strip()
                 if len(product_name) > 3:
-                    product_info['product_name'] = product_name[:100]  # Limit length
+                    product_info['product_name'] = product_name
+                    print(f"Found product name: '{product_name}'")
                     break
         
         # Extract batch number
         for pattern in batch_patterns:
             match = re.search(pattern, content, re.IGNORECASE)
             if match:
-                batch_no = match.group(1).strip()
-                batch_no = re.sub(r'[|*#]', ' ', batch_no).strip()
-                if len(batch_no) > 2:
-                    product_info['batch_number'] = batch_no[:50]
+                batch_number = match.group(1).strip()
+                # Clean up the batch number
+                batch_number = re.sub(r'[*|]', '', batch_number).strip()
+                if len(batch_number) > 2:
+                    product_info['batch_number'] = batch_number
+                    print(f"Found batch number: '{batch_number}'")
                     break
         
-        # Fallback: use keywords to identify product type
+        # If no product name found, use fallback
         if 'product_name' not in product_info:
-            if any(term in content_lower for term in ['pregabalin', 'hartkapseln']):
-                product_info['product_name'] = 'Pregabalin Product'
-            elif any(term in content_lower for term in ['tenofovir', 'emtricitabine', 'tenovamed']):
-                product_info['product_name'] = 'Tenovamed Product'
+            if any(term in content_lower for term in ['tenovamed', 'emtricitabine', 'tenofovir']):
+                product_info['product_name'] = 'TENOVAMED INOVAMED'
+                print("Using fallback: TENOVAMED INOVAMED")
             else:
                 product_info['product_name'] = 'Unknown Product'
+                print("No product name found, using Unknown Product")
         
-        return product_info
+        if 'batch_number' not in product_info:
+            print("No batch number found")
+            product_info['batch_number'] = 'Unknown'
+        
+        # Return tuple for compatibility with calling code
+        return product_info.get('product_name', 'Unknown'), product_info.get('batch_number', 'Unknown')
     
     def _are_product_names_similar(self, name1, name2):
         """
@@ -309,74 +345,66 @@ Focus on extracting complete analytical results to populate the certificate data
     
     def group_transcripts_by_product(self, transcripts_dir):
         """
-        Group transcript files by product identity.
+        Group transcript files by product name.
+        Returns: dict with product names as keys and list of file info as values
         """
-        transcripts_path = Path(transcripts_dir)
-        if not transcripts_path.exists():
-            print(f"Transcripts directory {transcripts_dir} not found")
+        if not os.path.exists(transcripts_dir):
             return {}
         
-        transcript_files = list(transcripts_path.glob("*.txt"))
-        print(f"Found {len(transcript_files)} transcript files")
+        transcript_files = [f for f in os.listdir(transcripts_dir) 
+                           if f.endswith('.txt') and os.path.isfile(os.path.join(transcripts_dir, f))]
         
-        # Read all transcripts and extract product info
-        transcript_data = {}
-        for transcript_file in transcript_files:
-            with open(transcript_file, 'r', encoding='utf-8') as f:
+        if not transcript_files:
+            return {}
+        
+        # Sort files to ensure consistent processing order
+        transcript_files.sort()
+        
+        products = {}
+        
+        print(f"DEBUG - Processing {len(transcript_files)} transcript files...")
+        
+        for filename in transcript_files:
+            filepath = os.path.join(transcripts_dir, filename)
+            
+            with open(filepath, 'r', encoding='utf-8') as f:
                 content = f.read()
             
-            product_info = self.identify_product_from_transcript(content)
-            transcript_data[transcript_file] = {
-                'content': content,
-                'product_info': product_info
-            }
-        
-        # Group by product identity with fuzzy matching
-        product_groups = defaultdict(list)
-        
-        for transcript_file, data in transcript_data.items():
-            product_info = data['product_info']
+            product_name, batch_number = self.identify_product_from_transcript(content)
             
-            # Create a product key for grouping
-            product_name = product_info.get('product_name', 'Unknown')
-            batch_number = product_info.get('batch_number', 'Unknown')
-            
-            # Check if this transcript should be grouped with an existing product
-            matched_group = None
-            
-            # Look for existing groups with similar product name and same batch
-            for existing_key, existing_transcripts in product_groups.items():
-                existing_info = existing_transcripts[0]['product_info']
-                existing_name = existing_info.get('product_name', '')
-                existing_batch = existing_info.get('batch_number', '')
-                
-                # Match if batch numbers are the same and product names are similar
-                if (batch_number != 'Unknown' and batch_number == existing_batch and
-                    self._are_product_names_similar(product_name, existing_name)):
-                    matched_group = existing_key
-                    break
-            
-            if matched_group:
-                # Add to existing group
-                product_groups[matched_group].append({
-                    'file': transcript_file,
-                    'content': data['content'],
-                    'product_info': product_info
-                })
+            # Create standardized product key for grouping
+            if product_name:
+                # Normalize product name for grouping
+                if "TENOVAMED" in product_name.upper():
+                    product_key = "TENOVAMED INOVAMED"
+                elif "PREGABALIN" in product_name.upper() and "100" in product_name:
+                    product_key = "Pregabalin Laurus 100mg"
+                elif "PREGABALIN" in product_name.upper() and "150" in product_name:
+                    product_key = "Pregabalin Laurus 150mg"
+                else:
+                    product_key = product_name[:50]  # Use first 50 chars as fallback
             else:
-                # Create new group
-                product_key = f"{product_name}_{batch_number}".replace(' ', '_')
-                product_groups[product_key].append({
-                    'file': transcript_file,
-                    'content': data['content'],
-                    'product_info': product_info
-                })
+                # Use filename as fallback
+                product_key = f"Unknown_Product_{filename.replace('.txt', '')}"
+            
+            print(f"DEBUG - File: {filename} -> Product Key: '{product_key}'")
+            
+            if product_key not in products:
+                products[product_key] = []
+            
+            products[product_key].append({
+                'filename': filename,
+                'filepath': filepath,
+                'content': content,
+                'product_name': product_name,
+                'batch_number': batch_number
+            })
         
-        print(f"Grouped transcripts into {len(product_groups)} products:")
-        for product_key, transcripts in product_groups.items():
-            print(f"  - {product_key}: {len(transcripts)} transcripts")
+        print(f"DEBUG - Found {len(products)} product groups:")
+        for product_key, files in products.items():
+            print(f"  - {product_key}: {len(files)} files")
         
-        return product_groups
+        return products
     
     def process_transcripts_directory(self, transcripts_dir):
         """
@@ -401,10 +429,10 @@ Focus on extracting complete analytical results to populate the certificate data
             source_files = []
             
             for transcript in transcripts:
-                combined_content.append(f"=== Content from {transcript['file'].name} ===")
+                combined_content.append(f"=== Content from {transcript['filename']} ===")
                 combined_content.append(transcript['content'])
                 combined_content.append("\n" + "="*50 + "\n")
-                source_files.append(transcript['file'].name)
+                source_files.append(transcript['filename'])
             
             full_content = "\n".join(combined_content)
             
@@ -426,7 +454,10 @@ Focus on extracting complete analytical results to populate the certificate data
                     'data': extracted_data,
                     'source_files': source_files,
                     'transcript_count': len(transcripts),
-                    'product_info': transcripts[0]['product_info']  # Use first transcript's product info
+                    'product_info': {
+                        'product_name': transcripts[0]['product_name'],
+                        'batch_number': transcripts[0]['batch_number']
+                    }
                 }
                 print(f"Successfully extracted data for {product_key}")
             else:
