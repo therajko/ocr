@@ -206,11 +206,8 @@ def process_pdf_pipeline(pdf_path, temp_dir, model_name="openai"):
     original_cwd = os.getcwd()
     os.chdir(temp_dir)
     
-    try:
-        # Pass the pdf_input directory to ensure only uploaded PDF is processed
-        convert_to_images.main("./pdf_input")
-    finally:
-        os.chdir(original_cwd)
+
+    convert_to_images.main("./pdf_input")
     
     progress_bar.progress(30)
     
