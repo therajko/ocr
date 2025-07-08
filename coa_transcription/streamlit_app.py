@@ -13,6 +13,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import convert_to_images
 from extract_and_process_images import process_images_with_model
+from structured_processor import StructuredCOAProcessor
 
 def check_dependencies():
     """Check if required system dependencies are available."""
@@ -28,171 +29,38 @@ def check_dependencies():
         st.warning(f"Dependency check warning: {e}")
         return True  # Continue anyway
 
-def extract_markdown_content(content):
-    """Extract content between ```markdown ``` blocks."""
-    markdown_pattern = r'```markdown\s*\n(.*?)\n```'
-    matches = re.findall(markdown_pattern, content, re.DOTALL)
+# Legacy functions removed - now using StructuredCOAProcessor
+
+def create_structured_excel_from_transcripts(transcriptions_dir, temp_dir, excel_filename="structured_coa_analysis.xlsx"):
+    """Create Excel file using structured templates from output_format."""
     
-    if matches:
-        return '\n\n'.join(matches)
+    # Initialize the structured processor
+    output_format_path = os.path.join(os.path.dirname(__file__), "output_format")
+    processor = StructuredCOAProcessor(templates_dir=output_format_path)
+    
+    # Process all transcripts using structured templates
+    st.info("Processing transcripts with structured templates...")
+    results = processor.process_transcripts_directory(transcriptions_dir)
+    
+    if not results:
+        st.error("No structured data could be extracted from transcripts")
+        return None
+    
+    # Create Excel file in temp directory
+    excel_path = os.path.join(temp_dir, excel_filename)
+    final_excel = processor.create_excel_output(results, excel_path)
+    
+    if final_excel:
+        # Count processed results by template and transcripts
+        template_counts = defaultdict(lambda: {'products': 0, 'transcripts': 0})
+        for result in results.values():
+            template = result['template']
+            template_counts[template]['products'] += 1
+            template_counts[template]['transcripts'] += result['transcript_count']
+        
+        return final_excel, template_counts
     else:
-        return content
-
-def extract_product_name(content):
-    """Extract product name from the transcript content."""
-    product_name_patterns = [
-        r'\|\s*\*\*Product Name:\*\*\s*\|\s*([^\|]+)\s*\|',  # | **Product Name:** | value |
-        r'\|\s*Product Name:\s*\|\s*([^\|]+)\s*\|',          # | Product Name: | value |
-        r'\*\*Product Name:\*\*\s*([^\n\|]+)',               # **Product Name:** value
-        r'Product Name:\s*([^\n\|]+)',                       # Product Name: value
-    ]
-    
-    for pattern in product_name_patterns:
-        match = re.search(pattern, content, re.IGNORECASE)
-        if match:
-            product_name = match.group(1).strip()
-            # Clean up the product name
-            product_name = re.sub(r'[*|]', '', product_name).strip()
-            # Remove "Product Name:" if it appears at the start
-            product_name = re.sub(r'^Product Name:\s*', '', product_name, flags=re.IGNORECASE).strip()
-            if len(product_name) > 2:
-                return product_name
-    
-    # Fallback: look for pharmaceutical terms
-    lines = content.split('\n')
-    for line in lines:
-        if any(term in line.lower() for term in ['capsules', 'tablets', 'mg', 'hartkapseln']):
-            cleaned_line = re.sub(r'[|*#]', ' ', line).strip()
-            if 10 < len(cleaned_line) < 80:
-                return cleaned_line[:50]
-    
-    return ""
-
-def process_content_to_rows(content):
-    """Convert content to Excel rows using "|" as separator and preserving newlines."""
-    lines = content.split('\n')
-    rows = []
-    
-    for line in lines:
-        line = line.strip()
-        if not line:
-            rows.append([''])  # Empty row for spacing
-            continue
-            
-        # If line contains "|", split by it
-        if '|' in line:
-            cells = [cell.strip() for cell in line.split('|')]
-            # Remove empty cells from start and end (markdown format)
-            if cells and cells[0] == '':
-                cells = cells[1:]
-            if cells and cells[-1] == '':
-                cells = cells[:-1]
-            if cells:  # Only add non-empty rows
-                rows.append(cells)
-        else:
-            # Single cell row
-            if line.strip():
-                rows.append([line])
-    
-    return rows
-
-def create_excel_from_transcripts(output_dir, excel_filename="combined_analysis.xlsx"):
-    """Create Excel file with tabs grouped by product name."""
-    if not os.path.exists(output_dir):
         return None
-    
-    # Group documents by product name
-    products_data = defaultdict(list)
-    
-    # Process transcript files
-    transcript_files = [f for f in os.listdir(output_dir) if f.endswith('.txt')]
-    
-    if not transcript_files:
-        return None
-    
-    for file in transcript_files:
-        with open(os.path.join(output_dir, file), 'r', encoding='utf-8') as f:
-            raw_content = f.read()
-        
-        # Pre-process: Extract markdown content
-        content = extract_markdown_content(raw_content)
-        
-        # Extract product name
-        product_name = extract_product_name(content)
-        
-        # Convert content to rows
-        rows = process_content_to_rows(content)
-        
-        # Store document data
-        document_data = {
-            'source_file': file,
-            'rows': rows,
-            'processed_content': content,
-            'raw_content': raw_content
-        }
-        
-        # Use filename as fallback if no product name found
-        if not product_name:
-            product_name = file.replace('.txt', '').replace('_', ' ')
-        
-        products_data[product_name].append(document_data)
-    
-    # Create Excel file
-    excel_path = os.path.join(output_dir, excel_filename)
-    
-    with pd.ExcelWriter(excel_path, engine='openpyxl') as writer:
-        
-        # Summary sheet
-        summary_data = []
-        for product_name, documents in products_data.items():
-            summary_data.append({
-                'Product Name': product_name,
-                'Number of Pages': len(documents),
-                'Source Files': ', '.join([doc['source_file'] for doc in documents])
-            })
-        
-        summary_df = pd.DataFrame(summary_data)
-        summary_df.to_excel(writer, sheet_name='Summary', index=False)
-        
-        # Individual product sheets
-        for product_name, documents in products_data.items():
-            # Create clean sheet name
-            sheet_name = re.sub(r'[^\w\s-]', '', product_name)[:31]
-            if not sheet_name.strip():
-                sheet_name = "Document"
-            
-            # Combine all rows from all pages for this product
-            all_rows = []
-            
-            # Add header
-            all_rows.append([f"Product: {product_name}"])
-            all_rows.append([f"Total Pages: {len(documents)}"])
-            all_rows.append([''])  # Empty row
-            
-            # Add content from each page
-            for i, doc in enumerate(documents, 1):
-                all_rows.append([f"=== Page {i}: {doc['source_file']} ==="])
-                all_rows.append([''])  # Empty row
-                
-                # Add the processed rows
-                all_rows.extend(doc['rows'])
-                all_rows.append([''])  # Separator between pages
-            
-            # Find maximum number of columns
-            max_cols = max(len(row) for row in all_rows) if all_rows else 1
-            
-            # Normalize all rows to have same number of columns
-            normalized_rows = []
-            for row in all_rows:
-                if len(row) < max_cols:
-                    row.extend([''] * (max_cols - len(row)))
-                normalized_rows.append(row)
-            
-            # Create DataFrame and save
-            df = pd.DataFrame(normalized_rows)
-            df.to_excel(writer, sheet_name=sheet_name, index=False, header=False)
-    
-    return excel_path, products_data
 
 def process_pdf_pipeline(pdf_path, temp_dir, model_name="openai"):
     """Complete pipeline to process PDF and generate Excel."""
@@ -276,29 +144,31 @@ def process_pdf_pipeline(pdf_path, temp_dir, model_name="openai"):
     
     st.success(f"✅ Generated {len(transcript_files)} transcriptions")
     
-    # Step 3: Create Excel file
-    status_text.text("Step 3/3: Creating Excel file...")
+    # Step 3: Create Excel file using structured templates
+    status_text.text("Step 3/3: Creating structured Excel file...")
     progress_bar.progress(90)
     
-    result = create_excel_from_transcripts(transcriptions_dir)
+    result = create_structured_excel_from_transcripts(transcriptions_dir, temp_dir)
     
     if result:
-        excel_path, products_data = result
+        excel_path, template_counts = result
         progress_bar.progress(100)
         status_text.text("✅ Processing complete!")
         
         # Display results summary
-        st.success(f"🎉 Successfully processed PDF!")
-        st.info(f"📊 Found {len(products_data)} unique products across {len(transcript_files)} pages")
+        st.success(f"🎉 Successfully processed PDF using structured templates!")
+        total_products = sum(counts['products'] for counts in template_counts.values())
+        total_transcripts = sum(counts['transcripts'] for counts in template_counts.values())
+        st.info(f"📊 Processed {total_products} products from {total_transcripts} transcript pages across {len(template_counts)} template types")
         
-        # Show product summary
-        with st.expander("📋 Product Summary"):
-            for product_name, documents in products_data.items():
-                st.write(f"**{product_name}**: {len(documents)} pages")
+        # Show template summary
+        with st.expander("📋 Processing Summary"):
+            for template_name, counts in template_counts.items():
+                st.write(f"**{template_name}**: {counts['products']} products from {counts['transcripts']} transcript pages")
         
         return excel_path
     else:
-        st.error("Failed to create Excel file")
+        st.error("Failed to create structured Excel file")
         return None
 
 def main():
@@ -371,15 +241,25 @@ def main():
         
         ### What this app does:
         - 🔄 Converts PDF pages to images
-        - 🤖 Uses AI (OpenAI) to extract text from images
-        - 📊 Groups pages by product name
-        - 📁 Creates Excel file with multiple tabs (one per product)
-        - 🎯 Preserves table structure using "|" separators
+        - 🤖 Uses AI (OpenAI) to extract text and analytical data from images
+        - 🔍 Groups transcript pages by product name and batch number
+        - 🎯 Uses structured templates to format data consistently
+        - 📊 Automatically identifies product types (Pregabalin, Tenovamed, etc.)
+        - 🧪 **Extracts actual test results** (assay values, impurities, microbial counts, etc.)
+        - 📁 Creates Excel file with one row per product containing all analytical results
+        - ✅ Ensures data matches exact pharmaceutical reporting standards
+        
+        ### Supported Product Types & Extracted Results:
+        - **Pregabalin products**: Laurus Hartkapseln formulations
+          - Assay, Water Content, Dissolution, Uniformity, Related Substances, Microbial Quality
+        - **Tenovamed products**: Tenofovir Disoproxil Fumarate/Emtricitabine combinations  
+          - Drug Content, Impurities, Dissolution profiles, Microbial testing
+        - **Additional templates**: Can be added to the output_format directory
         
         ### Requirements:
         - Valid OpenAI API key (set as environment variable)
         - PDF containing Certificate of Analysis documents
-        - Products should have "Product Name:" fields for proper grouping
+        - Documents should contain identifiable product information
         """)
 
 if __name__ == "__main__":
