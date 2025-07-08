@@ -5,6 +5,7 @@ import openai
 from pathlib import Path
 import re
 from collections import defaultdict
+from rapidfuzz import fuzz, process
 
 class StructuredCOAProcessor:
     """
@@ -27,42 +28,59 @@ class StructuredCOAProcessor:
         for csv_file in self.templates_dir.glob("*.csv"):
             template_name = csv_file.stem.replace("Final format - ", "")
             try:
-                # Try reading with multi-row headers first (pharmaceutical COA format)
-                try:
-                    df = pd.read_csv(csv_file, header=[0, 1])
-                    
-                    # Combine multi-level headers into single level
-                    if isinstance(df.columns, pd.MultiIndex):
-                        combined_headers = []
-                        for col in df.columns:
-                            # Join non-unnamed parts
-                            parts = [str(part) for part in col if not str(part).startswith('Unnamed')]
-                            if parts:
-                                combined_headers.append(' | '.join(parts))
-                            else:
-                                # If all parts are unnamed, use position-based naming
-                                combined_headers.append(f"Column_{len(combined_headers) + 1}")
-                        df.columns = combined_headers
-                except:
-                    # Fallback to single header row
-                    df = pd.read_csv(csv_file)
-                    
-                    # Clean up any unnamed columns 
-                    cleaned_headers = []
-                    for i, col in enumerate(df.columns):
-                        if str(col).startswith('Unnamed'):
-                            cleaned_headers.append(f"Column_{i + 1}")
-                        else:
-                            cleaned_headers.append(str(col))
-                    df.columns = cleaned_headers
+                # Read the raw CSV to preserve ALL rows including multi-level headers
+                with open(csv_file, 'r', encoding='utf-8') as f:
+                    raw_lines = f.readlines()
+                
+                # Parse CSV manually to preserve structure
+                import csv
+                all_rows = []
+                with open(csv_file, 'r', encoding='utf-8') as f:
+                    csv_reader = csv.reader(f)
+                    for row in csv_reader:
+                        all_rows.append(row)
+                
+                if not all_rows:
+                    continue
+                
+                # Find the main header row (usually the last non-empty header row)
+                header_row_idx = -1
+                for i, row in enumerate(all_rows):
+                    # Check if this row has meaningful headers (not mostly empty)
+                    non_empty_cells = [cell.strip() for cell in row if cell.strip()]
+                    if len(non_empty_cells) > 5:  # Assume main header has many columns
+                        header_row_idx = i
+                
+                if header_row_idx == -1:
+                    header_row_idx = 0  # Fallback to first row
+                
+                # Extract headers from the identified header row
+                headers = all_rows[header_row_idx]
+                
+                # Clean up headers
+                cleaned_headers = []
+                for i, header in enumerate(headers):
+                    if not header.strip():
+                        cleaned_headers.append(f"Column_{i + 1}")
+                    else:
+                        cleaned_headers.append(header.strip())
+                
+                # Ensure all rows have the same length as headers
+                max_cols = len(cleaned_headers)
+                normalized_rows = []
+                for row in all_rows:
+                    normalized_row = row + [''] * (max_cols - len(row))  # Pad with empty strings
+                    normalized_rows.append(normalized_row[:max_cols])  # Trim to max_cols
                 
                 templates[template_name] = {
                     'file': csv_file,
-                    'headers': df.columns.tolist(),
-                    'structure': df.to_dict('records')[0] if len(df) > 0 else {},
-                    'dataframe': df
+                    'headers': cleaned_headers,
+                    'all_rows': normalized_rows,  # Keep all rows including headers
+                    'header_row_index': header_row_idx,
+                    'data_start_index': header_row_idx + 1,
+                    'total_rows': len(normalized_rows)
                 }
-                print(f"Loaded template: {template_name}")
+                print(f"Loaded template: {template_name} ({len(normalized_rows)} rows, {len(cleaned_headers)} columns)")
             except Exception as e:
                 print(f"Error loading template {csv_file}: {e}")
         
@@ -70,36 +88,127 @@ class StructuredCOAProcessor:
     
     def identify_product_template(self, transcript_content):
         """
-        Identify which template to use based on transcript content.
+        Identify which template to use based on transcript content using similarity scoring.
         """
         content_lower = transcript_content.lower()
         
-        # Product-specific keywords for template matching
-        template_keywords = {
-            'pregabalin': ['pregabalin', 'hartkapseln', 'laurus'],
-            'tenovamed': ['tenofovir', 'emtricitabine', 'tenovamed', 'inovamed'],
-        }
+        # Extract key terms from content for matching
+        content_terms = self._extract_key_terms(content_lower)
         
-        scores = {}
-        for template_type, keywords in template_keywords.items():
-            score = sum(1 for keyword in keywords if keyword in content_lower)
-            if score > 0:
-                scores[template_type] = score
+        template_scores = {}
         
-        if scores:
-            best_match = max(scores.keys(), key=lambda k: scores[k])
+        for template_name, template_data in self.templates.items():
+            # Extract key terms from template name
+            template_terms = self._extract_key_terms(template_name.lower())
             
-            # Find matching template
-            for template_name, template_data in self.templates.items():
-                if best_match in template_name.lower():
-                    return template_name, template_data
+            # Calculate similarity scores using different strategies
+            scores = []
+            
+            # 1. Direct fuzzy matching between template name and content
+            direct_score = fuzz.partial_ratio(template_name.lower(), content_lower)
+            scores.append(direct_score * 0.3)  # Weight: 30%
+            
+            # 2. Fuzzy matching between template terms and content terms
+            if template_terms and content_terms:
+                term_scores = []
+                for template_term in template_terms:
+                    # Find best match for this template term in content terms
+                    best_match = process.extractOne(template_term, content_terms, scorer=fuzz.ratio)
+                    if best_match and best_match[1] > 60:  # Minimum threshold
+                        term_scores.append(best_match[1])
+                
+                if term_scores:
+                    avg_term_score = sum(term_scores) / len(term_scores)
+                    scores.append(avg_term_score * 0.4)  # Weight: 40%
+            
+            # 3. Product-specific similarity (dosage matching for pharmaceuticals)
+            dosage_score = self._calculate_dosage_similarity(template_name.lower(), content_lower)
+            scores.append(dosage_score * 0.3)  # Weight: 30%
+            
+            # Final weighted score
+            final_score = sum(scores) if scores else 0
+            
+            if final_score > 20:  # Minimum threshold to consider a match
+                template_scores[template_name] = final_score
+        
+        # Return the template with the highest score
+        if template_scores:
+            best_template = max(template_scores.keys(), key=lambda k: template_scores[k])
+            print(f"Template matching scores: {template_scores}")
+            print(f"Selected template: {best_template} (score: {template_scores[best_template]:.2f})")
+            return best_template, self.templates[best_template]
         
         # Default to first available template
         if self.templates:
             first_template = list(self.templates.keys())[0]
+            print(f"No specific match found, using default: {first_template}")
             return first_template, self.templates[first_template]
         
         return None, None
+    
+    def _extract_key_terms(self, text):
+        """
+        Extract key pharmaceutical terms from text for similarity matching.
+        """
+        # Remove common stop words and extract meaningful terms
+        stop_words = {'the', 'and', 'or', 'of', 'in', 'to', 'for', 'with', 'by', 'format', 'final'}
+        
+        # Extract words (alphanumeric sequences)
+        words = re.findall(r'\b[a-zA-Z]+\b', text)
+        
+        # Filter out stop words and short words
+        key_terms = [word.lower() for word in words 
+                    if len(word) > 2 and word.lower() not in stop_words]
+        
+        # Also extract pharmaceutical-specific patterns
+        # Drug names, dosages, etc.
+        pharma_patterns = [
+            r'\b[a-zA-Z]+\d+mg\b',  # e.g., pregabalin100mg
+            r'\b\d+mg\b',           # e.g., 100mg
+            r'\b[a-zA-Z]{5,}\b'     # Longer pharmaceutical names
+        ]
+        
+        for pattern in pharma_patterns:
+            matches = re.findall(pattern, text)
+            key_terms.extend([match.lower() for match in matches])
+        
+        return list(set(key_terms))  # Remove duplicates
+    
+    def _calculate_dosage_similarity(self, template_name, content):
+        """
+        Calculate similarity based on dosage information for pharmaceutical products.
+        """
+        # Extract dosages from template name (e.g., "100mg", "150mg")
+        template_dosages = re.findall(r'(\d+)\s*mg\b', template_name)
+        
+        # Extract dosages from content (various formats)
+        content_dosages = re.findall(r'(\d+)\s*mg\b', content)
+        content_dosages.extend(re.findall(r'(\d+)\s+mg\b', content))
+        content_dosages.extend(re.findall(r'(\d+)mg', content))
+        
+        if not template_dosages:
+            return 50  # Neutral score if no dosage in template
+        
+        if not content_dosages:
+            return 30  # Lower score if no dosage in content
+        
+        # Convert to integers and filter reasonable dosage range
+        template_dosages = [int(d) for d in template_dosages]
+        content_dosages = [int(d) for d in content_dosages if 10 <= int(d) <= 2000]
+        
+        # Check for exact dosage matches
+        for template_dose in template_dosages:
+            if template_dose in content_dosages:
+                return 100  # Perfect dosage match
+        
+        # Check for close dosage matches (within 20% difference)
+        for template_dose in template_dosages:
+            for content_dose in content_dosages:
+                diff_ratio = abs(template_dose - content_dose) / template_dose
+                if diff_ratio <= 0.2:  # Within 20%
+                    return 80  # Close dosage match
+        
+        return 20  # No dosage match
     
     def create_extraction_prompt(self, template_name, template_data, transcript_content):
         """
@@ -512,41 +621,66 @@ OUTPUT: Return ONLY a JSON object with the required fields.
                 
                 # Get template structure
                 if template_name in self.templates:
-                    headers = self.templates[template_name]['headers']
+                    template_data = self.templates[template_name]
+                    headers = template_data['headers']
+                    all_template_rows = template_data['all_rows']
+                    data_start_index = template_data['data_start_index']
                     
-                    # Create data rows from extracted results (one row per product)
-                    data_rows = []
+                    # Start with the complete template structure
+                    output_rows = []
+                    
+                    # Add all template rows (including multi-level headers and template rows)
+                    for row in all_template_rows:
+                        output_rows.append(row[:])  # Copy the row
+                    
+                    # Add extracted data rows for each product
                     for result in results:
-                        row_data = {}
                         extracted = result['data']
+                        source_files = result['source_files']
                         
-                        # Map extracted data to template columns
-                        for header in headers:
-                            row_data[header] = extracted.get(header, "N/A")
+                        # Create data row matching template structure
+                        data_row = [''] * len(headers)
                         
-                        # Add metadata about source files (in a comment or additional column if space)
-                        if 'Source Files' not in headers and len(headers) < 50:  # Avoid too many columns
-                            source_files_str = '; '.join(result['source_files'])
-                            row_data['Source Files'] = source_files_str
+                        # Map extracted data to correct columns
+                        for i, header in enumerate(headers):
+                            if header in extracted:
+                                data_row[i] = str(extracted[header])
+                            elif header.strip() == '':
+                                data_row[i] = ''  # Keep empty for empty headers
+                            else:
+                                data_row[i] = 'N/A'  # Default for missing data
                         
-                        data_rows.append(row_data)
+                        # Add source file info to first empty column or append as comment
+                        source_info = f"Sources: {'; '.join(source_files)}"
+                        
+                        # Try to find a good place for source info
+                        for i, header in enumerate(headers):
+                            if 'source' in header.lower() or header.strip() == '':
+                                data_row[i] = source_info
+                                break
+                        
+                        output_rows.append(data_row)
                     
-                    # Create DataFrame with template structure + data
-                    if data_rows:
-                        # Determine final columns
-                        final_headers = headers.copy()
-                        if 'Source Files' in data_rows[0] and 'Source Files' not in final_headers:
-                            final_headers.append('Source Files')
-                        
-                        output_df = pd.DataFrame(data_rows, columns=final_headers)
-                        
-                        # Clean sheet name
-                        sheet_name = re.sub(r'[^\w\s-]', '', template_name)[:31]
-                        if not sheet_name.strip():
-                            sheet_name = "COA_Data"
-                        
-                        output_df.to_excel(writer, sheet_name=sheet_name, index=False)
-                        print(f"Created sheet '{sheet_name}' with {len(data_rows)} products from {sum(r['transcript_count'] for r in results)} transcripts")
+                    # Create DataFrame preserving exact structure
+                    # Use column indices as column names to avoid header conflicts
+                    if output_rows:
+                        output_df = pd.DataFrame(output_rows)
+                    else:
+                        output_df = pd.DataFrame()
+                    
+                    # Clean sheet name
+                    sheet_name = re.sub(r'[^\w\s-]', '', template_name)[:31]
+                    if not sheet_name.strip():
+                        sheet_name = "COA_Data"
+                    
+                    # Write to Excel without headers (since template includes its own headers)
+                    output_df.to_excel(writer, sheet_name=sheet_name, index=False, header=False)
+                    
+                    print(f"Created sheet '{sheet_name}' with complete template structure:")
+                    print(f"  - Original template rows: {len(all_template_rows)}")
+                    print(f"  - Added data rows: {len(results)}")
+                    print(f"  - Total rows: {len(output_rows)}")
+                    print(f"  - Source transcripts: {sum(r['transcript_count'] for r in results)}")
         
         print(f"Excel file created: {output_file}")
         print(f"Final result: {len(processed_results)} products processed from multiple transcript pages")
