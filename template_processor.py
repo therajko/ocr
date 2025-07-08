@@ -1,6 +1,5 @@
 import os
 import json
-import docx
 import re
 from openai import OpenAI
 import argparse
@@ -21,7 +20,7 @@ def read_word_template(file_path: str) -> str:
     if not os.path.exists(file_path):
         raise FileNotFoundError(f"Template file not found: {file_path}")
         
-    doc = docx.Document(file_path)
+    doc = Document(file_path)
     content = []
     
     for para in doc.paragraphs:
