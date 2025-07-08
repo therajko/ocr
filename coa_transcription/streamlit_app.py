@@ -210,7 +210,7 @@ def process_pdf_pipeline(pdf_path, temp_dir, model_name="openai"):
     convert_to_images.main("./pdf_input")
     
     progress_bar.progress(30)
-    
+    st.error("images_dir: " + images_dir)
     # Check if images were created
     image_files = [f for f in os.listdir(images_dir) if f.lower().endswith(('.jpg', '.jpeg', '.png'))]
     if not image_files:
